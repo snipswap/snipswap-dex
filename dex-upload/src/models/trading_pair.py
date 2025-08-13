@@ -1,203 +1,161 @@
-from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
-import json
+"""In‑memory TradingPair model for SnipSwap.
 
-db = SQLAlchemy()
+This stub implementation provides minimal functionality to satisfy
+the Flask routes defined in ``src/routes/market.py``.  It defines
+static sample trading pairs along with helper methods to return
+order books and recent trades.  The API mirrors a subset of what a
+SQLAlchemy model might expose: a class attribute ``query`` with a
+``filter_by`` method returning an object with ``all`` and ``first``
+methods, instance attributes such as ``symbol``, ``price`` and
+``volume``, and instance methods ``to_dict``, ``get_orderbook`` and
+``get_recent_trades``.
 
-class TradingPair(db.Model):
-    __tablename__ = 'trading_pairs'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    pair_id = db.Column(db.String(32), unique=True, nullable=False, index=True)
-    
-    # Token information
-    base_token = db.Column(db.String(64), nullable=False)  # e.g., SCRT
-    quote_token = db.Column(db.String(64), nullable=False)  # e.g., USDT
-    base_token_address = db.Column(db.String(128), nullable=True)
-    quote_token_address = db.Column(db.String(128), nullable=True)
-    
-    # Pair metadata
-    symbol = db.Column(db.String(32), nullable=False, index=True)  # e.g., SCRT/USDT
-    name = db.Column(db.String(128), nullable=False)
-    description = db.Column(db.Text, nullable=True)
-    
-    # Trading configuration
-    is_active = db.Column(db.Boolean, default=True)
-    is_private = db.Column(db.Boolean, default=True)  # Private trading via Secret Contracts
-    min_order_size = db.Column(db.Numeric(20, 8), default=0.00000001)
-    max_order_size = db.Column(db.Numeric(20, 8), nullable=True)
-    price_precision = db.Column(db.Integer, default=8)
-    quantity_precision = db.Column(db.Integer, default=8)
-    
-    # Market data
-    last_price = db.Column(db.Numeric(20, 8), default=0)
-    price_change_24h = db.Column(db.Numeric(10, 4), default=0)  # Percentage
-    volume_24h_base = db.Column(db.Numeric(20, 8), default=0)
-    volume_24h_quote = db.Column(db.Numeric(20, 8), default=0)
-    high_24h = db.Column(db.Numeric(20, 8), default=0)
-    low_24h = db.Column(db.Numeric(20, 8), default=0)
-    
-    # Liquidity information
-    total_liquidity = db.Column(db.Numeric(20, 8), default=0)
-    liquidity_base = db.Column(db.Numeric(20, 8), default=0)
-    liquidity_quote = db.Column(db.Numeric(20, 8), default=0)
-    
-    # Timestamps
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    last_trade_at = db.Column(db.DateTime, nullable=True)
-    
-    # Relationships
-    orders = db.relationship('Order', backref='trading_pair', lazy=True)
-    trades = db.relationship('Trade', backref='trading_pair', lazy=True)
-    liquidity_pools = db.relationship('LiquidityPool', backref='trading_pair', lazy=True)
-    
-    def __repr__(self):
-        return f'<TradingPair {self.symbol}>'
-    
-    def to_dict(self, include_sensitive=False):
-        """Convert to dictionary for API responses"""
-        data = {
-            'id': self.id,
-            'pair_id': self.pair_id,
-            'base_token': self.base_token,
-            'quote_token': self.quote_token,
-            'symbol': self.symbol,
-            'name': self.name,
-            'description': self.description,
-            'is_active': self.is_active,
-            'is_private': self.is_private,
-            'min_order_size': float(self.min_order_size),
-            'max_order_size': float(self.max_order_size) if self.max_order_size else None,
-            'price_precision': self.price_precision,
-            'quantity_precision': self.quantity_precision,
-            'last_price': float(self.last_price),
-            'price_change_24h': float(self.price_change_24h),
-            'volume_24h_base': float(self.volume_24h_base),
-            'volume_24h_quote': float(self.volume_24h_quote),
-            'high_24h': float(self.high_24h),
-            'low_24h': float(self.low_24h),
-            'total_liquidity': float(self.total_liquidity),
-            'created_at': self.created_at.isoformat(),
-            'updated_at': self.updated_at.isoformat(),
-            'last_trade_at': self.last_trade_at.isoformat() if self.last_trade_at else None
-        }
-        
-        if include_sensitive:
-            data.update({
-                'base_token_address': self.base_token_address,
-                'quote_token_address': self.quote_token_address,
-                'liquidity_base': float(self.liquidity_base),
-                'liquidity_quote': float(self.liquidity_quote)
-            })
-        
-        return data
-    
-    def update_market_data(self, price, volume_base, volume_quote):
-        """Update market data after a trade"""
-        old_price = float(self.last_price)
-        self.last_price = price
-        self.last_trade_at = datetime.utcnow()
-        
-        # Update 24h high/low
-        if price > self.high_24h:
-            self.high_24h = price
-        if price < self.low_24h or self.low_24h == 0:
-            self.low_24h = price
-        
-        # Update volume (this would be more complex in production)
-        self.volume_24h_base += volume_base
-        self.volume_24h_quote += volume_quote
-        
-        # Calculate price change
-        if old_price > 0:
-            self.price_change_24h = ((float(price) - old_price) / old_price) * 100
-        
-        self.updated_at = datetime.utcnow()
-        db.session.commit()
-    
-    def get_orderbook(self, depth=20):
-        """Get orderbook for this trading pair"""
-        from src.models.order import Order
-        
-        # Get buy orders (bids) - highest price first
-        buy_orders = Order.query.filter_by(
-            pair_id=self.id,
-            side='buy',
-            status='open'
-        ).order_by(Order.price.desc()).limit(depth).all()
-        
-        # Get sell orders (asks) - lowest price first
-        sell_orders = Order.query.filter_by(
-            pair_id=self.id,
-            side='sell',
-            status='open'
-        ).order_by(Order.price.asc()).limit(depth).all()
-        
+The sample data can be replaced or extended to suit your testing
+needs.
+"""
+
+from __future__ import annotations
+
+import random
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional, Any
+
+
+class _QueryProxy:
+    """Proxy to mimic SQLAlchemy query interface for TradingPair."""
+
+    def __init__(self, pairs: List['TradingPair']):
+        self._pairs = pairs
+
+    def filter_by(self, **kwargs) -> '_QueryProxy':
+        # Support filtering by symbol (case insensitive) and is_active
+        filtered = self._pairs
+        for key, value in kwargs.items():
+            if key == 'symbol':
+                filtered = [p for p in filtered if p.symbol.upper() == str(value).upper()]
+            elif key == 'is_active':
+                filtered = [p for p in filtered if p.is_active == value]
+        return _QueryProxy(filtered)
+
+    def all(self) -> List['TradingPair']:
+        return list(self._pairs)
+
+    def first(self) -> Optional['TradingPair']:
+        return self._pairs[0] if self._pairs else None
+
+
+class TradingPair:
+    """Simple representation of a trading pair."""
+
+    # Sample static data for active trading pairs.
+    _sample_pairs: List['TradingPair'] = []
+
+    def __init__(self, symbol: str, price: float, change: float, volume: float, is_active: bool = True):
+        self.id: int = len(TradingPair._sample_pairs) + 1
+        self.symbol: str = symbol.upper()
+        self.price: float = price
+        self.change: float = change
+        self.volume: float = volume
+        self.is_active: bool = is_active
+
+    @property
+    def positive(self) -> bool:
+        return self.change >= 0
+
+    def to_dict(self) -> Dict[str, Any]:
         return {
-            'bids': [[float(order.price), float(order.remaining_quantity)] for order in buy_orders],
-            'asks': [[float(order.price), float(order.remaining_quantity)] for order in sell_orders],
-            'timestamp': datetime.utcnow().isoformat()
+            'id': self.id,
+            'symbol': self.symbol,
+            'price': f"{self.price:.4f}",
+            'change': f"{self.change:+.4f}",
+            'positive': self.positive,
+            'volume': f"{self.volume:.2f}",
+            'is_active': self.is_active,
         }
-    
-    def get_recent_trades(self, limit=50):
-        """Get recent trades for this pair"""
-        from src.models.trade import Trade
-        
-        trades = Trade.query.filter_by(
-            pair_id=self.id
-        ).order_by(Trade.executed_at.desc()).limit(limit).all()
-        
-        return [trade.to_dict() for trade in trades]
-    
-    def calculate_spread(self):
-        """Calculate bid-ask spread"""
-        orderbook = self.get_orderbook(depth=1)
-        
-        if orderbook['bids'] and orderbook['asks']:
-            best_bid = orderbook['bids'][0][0]
-            best_ask = orderbook['asks'][0][0]
-            spread = best_ask - best_bid
-            spread_percentage = (spread / best_ask) * 100 if best_ask > 0 else 0
-            
-            return {
-                'spread': spread,
-                'spread_percentage': spread_percentage,
-                'best_bid': best_bid,
-                'best_ask': best_ask
-            }
-        
-        return None
-    
-    @staticmethod
-    def get_active_pairs():
-        """Get all active trading pairs"""
-        return TradingPair.query.filter_by(is_active=True).all()
-    
-    @staticmethod
-    def get_pair_by_symbol(symbol):
-        """Get trading pair by symbol"""
-        return TradingPair.query.filter_by(symbol=symbol, is_active=True).first()
-    
-    @staticmethod
-    def create_pair(base_token, quote_token, **kwargs):
-        """Create a new trading pair"""
-        import uuid
-        
-        pair_id = str(uuid.uuid4())[:8]
-        symbol = f"{base_token}/{quote_token}"
-        name = f"{base_token} / {quote_token}"
-        
-        pair = TradingPair(
-            pair_id=pair_id,
-            base_token=base_token,
-            quote_token=quote_token,
-            symbol=symbol,
-            name=name,
-            **kwargs
-        )
-        
-        db.session.add(pair)
-        db.session.commit()
-        return pair
 
+    def get_orderbook(self, depth: int = 20) -> Dict[str, List[Dict[str, float]]]:
+        """Generate a fake order book for demonstration purposes.
+
+        Creates bids and asks around the current price with random sizes.
+
+        Parameters
+        ----------
+        depth: int
+            Number of price levels to generate for bids and asks.
+
+        Returns
+        -------
+        dict
+            A dictionary with ``bids`` and ``asks`` lists.
+        """
+        bids: List[Dict[str, float]] = []
+        asks: List[Dict[str, float]] = []
+        # Generate bids: slightly below the current price
+        base_price = self.price
+        for i in range(depth):
+            price = base_price * (1 - (i + 1) * 0.001)
+            quantity = random.uniform(1, 50)
+            bids.append({'price': price, 'quantity': quantity})
+        # Generate asks: slightly above the current price
+        for i in range(depth):
+            price = base_price * (1 + (i + 1) * 0.001)
+            quantity = random.uniform(1, 50)
+            asks.append({'price': price, 'quantity': quantity})
+        return {'bids': bids, 'asks': asks}
+
+    def get_recent_trades(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Generate fake recent trades for demonstration.
+
+        Produces a list of trade dictionaries with timestamps
+        decreasing from now.  Sides alternate between buy and sell.
+
+        Parameters
+        ----------
+        limit: int
+            Number of trades to generate.
+
+        Returns
+        -------
+        list
+            A list of trade objects.
+        """
+        trades: List[Dict[str, Any]] = []
+        now = datetime.utcnow()
+        for i in range(limit):
+            side = 'buy' if i % 2 == 0 else 'sell'
+            # Price slightly varies around current price
+            price_variation = (random.random() - 0.5) * 0.01 * self.price
+            price = self.price + price_variation
+            quantity = random.uniform(0.1, 10)
+            timestamp = now - timedelta(seconds=i * 30)
+            trades.append(
+                {
+                    'price': price,
+                    'quantity': quantity,
+                    'side': side,
+                    'timestamp': timestamp.isoformat() + 'Z',
+                }
+            )
+        return trades
+
+    # Class level query proxy mimicking SQLAlchemy
+    query: _QueryProxy = None  # type: ignore
+
+
+# Populate the sample pairs when module is imported
+def _init_sample_pairs():
+    if TradingPair._sample_pairs:
+        return
+    # Define some plausible default pairs
+    samples = [
+        ('SCRT/USDT', 0.50, 0.01, 10000.0),
+        ('SHD/USDT', 5.25, -0.12, 7500.0),
+        ('OSMO/USDT', 0.90, 0.05, 8300.0),
+        ('ATOM/USDT', 8.30, 0.20, 11000.0),
+    ]
+    for symbol, price, change, volume in samples:
+        TradingPair._sample_pairs.append(TradingPair(symbol, price, change, volume))
+    TradingPair.query = _QueryProxy(TradingPair._sample_pairs)
+
+
+_init_sample_pairs()
