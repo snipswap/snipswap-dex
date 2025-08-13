@@ -30,12 +30,15 @@ CROSS_CHAIN_ENDPOINTS: Dict[str, str] = {
     # Example endpoints – replace with real IBC relay or smart contract
     # gateways when integrating with live networks.
     # Map both canonical chain IDs and friendly names to the same endpoint
-    # so clients can provide either value. Secret Network orders stay on chain
-    # (no external bridge required), so it is intentionally omitted.
+    # so clients can provide either value. For example, "secret-4" and
+    # "secret" both point to the Secret Network bridge.  If a chain is not
+    # listed here the helper will fall back to simple logging.
     "osmosis-1": "https://osmosis-bridge.example.com/api/bridge",
     "osmosis": "https://osmosis-bridge.example.com/api/bridge",
     "shade-1": "https://shade-bridge.example.com/api/bridge",
     "shade": "https://shade-bridge.example.com/api/bridge",
+    "secret-4": "https://secret-bridge.example.com/api/bridge",
+    "secret": "https://secret-bridge.example.com/api/bridge",
     # Additional chains can be added below as needed.
 }
 
