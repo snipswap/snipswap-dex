@@ -38,11 +38,10 @@ scikit-learn==1.4.1.post1
 web3==6.15.1
 eth-account==0.10.0
 py-solc-x==2.0.2
-brownie-eth==1.20.0
 
 # Secret Network Integration
-secret-sdk==1.7.0
-cosmpy==0.9.2
+# secret-sdk==1.7.0
+# cosmpy==0.9.2
 bech32==1.2.0
 
 # Advanced Monitoring & Analytics
@@ -81,8 +80,8 @@ black==24.2.0
 flake8==7.0.0
 mypy==1.8.0
 
-# Sovereignty Stack Integrations
-akash-python==0.1.0
-sentinel-sdk==0.0.1
-jackal-sdk==0.1.0
+# Sovereignty Stack Integrations (commented out for initial deployment)
+# akash-python==0.1.0
+# sentinel-sdk==0.0.1
+# jackal-sdk==0.1.0
 
