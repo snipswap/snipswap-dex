@@ -15,12 +15,19 @@ Modifications from upstream:
       one could accept a client order and return an encrypted receipt
       using symmetric encryption. See `src/routes/private.py` for
       details.
+    * Production-ready configuration with environment variables
+    * Enhanced security and monitoring features
 """
 
 import os
 import sys
+from datetime import datetime
 # Ensure that imports resolve correctly when run from the project root.
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
 
 from flask import Flask, send_from_directory
 from flask_cors import CORS
@@ -44,13 +51,29 @@ from src.websocket.trading_handler import register_trading_events
 
 
 app = Flask(__name__, static_folder=os.path.join(os.path.dirname(__file__), "static"))
-app.config["SECRET_KEY"] = "dex-secret-key-change-in-production"
 
-# Enable CORS for all routes and any origin
-CORS(app, origins="*")
+# Production-ready configuration
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dex-secret-key-change-in-production")
+app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
+    "DATABASE_URL", 
+    f"sqlite:///{os.path.join(os.path.dirname(__file__), 'database', 'app.db')}"
+)
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-# Initialize SocketIO with CORS disabled (origins="*")
-socketio = SocketIO(app, cors_allowed_origins="*")
+# Security configurations
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get("FLASK_ENV") == "production"
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+
+# CORS configuration
+cors_origins = os.environ.get("CORS_ORIGINS", "*")
+if cors_origins != "*":
+    cors_origins = cors_origins.split(",")
+CORS(app, origins=cors_origins)
+
+# Initialize SocketIO with CORS configuration
+socketio_origins = cors_origins if cors_origins != "*" else "*"
+socketio = SocketIO(app, cors_allowed_origins=socketio_origins)
 
 # Register REST blueprints
 app.register_blueprint(user_bp, url_prefix="/api")
@@ -61,9 +84,7 @@ app.register_blueprint(auth_bp, url_prefix="/api/auth")
 app.register_blueprint(market_bp, url_prefix="/api/market")
 app.register_blueprint(private_bp, url_prefix="/api/private")
 
-# Database configuration
-app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{os.path.join(os.path.dirname(__file__), 'database', 'app.db')}"
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+# Initialize database
 db.init_app(app)
 
 # Ensure database tables exist on startup
@@ -76,8 +97,23 @@ register_trading_events(socketio)
 
 @app.route("/api/health")
 def health_check():
-    """Health check endpoint used for monitoring."""
-    return {"status": "healthy", "service": "snipswap-dex"}, 200
+    """Enhanced health check endpoint for monitoring."""
+    try:
+        # Test database connection
+        db.session.execute('SELECT 1')
+        db_status = "healthy"
+    except Exception as e:
+        db_status = f"error: {str(e)}"
+    
+    return {
+        "status": "healthy" if db_status == "healthy" else "degraded",
+        "service": "snipswap-dex",
+        "version": "2.0.0",
+        "database": db_status,
+        "websocket": "enabled",
+        "privacy": "secret-network-ready",
+        "timestamp": datetime.utcnow().isoformat()
+    }, 200
 
 
 @app.route("/", defaults={"path": ""})
@@ -88,7 +124,7 @@ def serve(path: str):
     If the requested path corresponds to a file under the static folder
     it will be returned directly. Otherwise `index.html` will be
     returned if present. When neither the file nor `index.html` exist
-    an HTTP 404 response is returned.
+    an HTTP 404 response is returned.
     """
     static_folder_path = app.static_folder
     if static_folder_path is None:
@@ -105,5 +141,14 @@ def serve(path: str):
 
 
 if __name__ == "__main__":
-    # When running this module directly we bind to all interfaces on port 5001
-    socketio.run(app, host="0.0.0.0", port=5001, debug=True)
+    # Production configuration
+    port = int(os.environ.get("PORT", 5001))
+    debug = os.environ.get("FLASK_ENV") != "production"
+    
+    print(f"🚀 SnipSwap DEX starting on port {port}")
+    print(f"🔒 Debug mode: {debug}")
+    print(f"🌐 CORS origins: {os.environ.get('CORS_ORIGINS', '*')}")
+    print(f"💾 Database: {app.config['SQLALCHEMY_DATABASE_URI'][:50]}...")
+    
+    socketio.run(app, host="0.0.0.0", port=port, debug=debug)
+
