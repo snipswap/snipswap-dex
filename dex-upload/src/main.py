@@ -379,8 +379,8 @@ if __name__ == "__main__":
     
     # 🚀 Production-ready server configuration
     if debug:
-        # Development mode - use Werkzeug
-        socketio.run(app, host="0.0.0.0", port=port, debug=debug)
+        # Development mode - use Werkzeug with Railway compatibility
+        socketio.run(app, host="0.0.0.0", port=port, debug=debug, allow_unsafe_werkzeug=True)
     else:
         # Production mode - allow Werkzeug with safety override for Railway
         socketio.run(app, host="0.0.0.0", port=port, debug=debug, allow_unsafe_werkzeug=True)
