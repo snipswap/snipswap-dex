@@ -23,12 +23,8 @@ import structlog
 import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
 
-# Database models
-from src.models.user import db
-from src.models.trading_pair import TradingPair
-from src.models.order import Order
-from src.models.trade import Trade
-from src.models.privacy_session import PrivacySession
+# Database models - Import from models package to avoid circular imports
+from src.models import db, User, TradingPair, Order, Trade, PrivacySession
 
 # API Routes
 from src.routes.user import user_bp

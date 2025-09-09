@@ -4,6 +4,7 @@ import uuid
 import hashlib
 import secrets
 
+# Use shared db instance - will be initialized in __init__.py
 db = SQLAlchemy()
 
 class PrivacySession(db.Model):

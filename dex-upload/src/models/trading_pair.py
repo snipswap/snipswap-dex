@@ -2,6 +2,7 @@ from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 import json
 
+# Use shared db instance - will be initialized in __init__.py
 db = SQLAlchemy()
 
 class TradingPair(db.Model):

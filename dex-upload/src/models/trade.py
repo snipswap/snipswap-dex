@@ -3,6 +3,7 @@ from datetime import datetime
 import uuid
 import hashlib
 
+# Use shared db instance - will be initialized in __init__.py
 db = SQLAlchemy()
 
 class Trade(db.Model):

@@ -4,6 +4,7 @@ import uuid
 import hashlib
 import json
 
+# Use shared db instance - will be initialized in __init__.py
 db = SQLAlchemy()
 
 class Order(db.Model):
