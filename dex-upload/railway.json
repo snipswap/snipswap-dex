@@ -1,1 +1,15 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "buildCommand": "pip install -r requirements.txt"
+  },
+  "deploy": {
+    "runtime": "V2",
+    "numReplicas": 1,
+    "startCommand": "python src/main.py",
+    "sleepApplication": false,
+    "useLegacyStacker": false
+  }
+}
 
