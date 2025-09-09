@@ -1,87 +1,149 @@
-"""In‑memory Order model for SnipSwap.
+from flask_sqlalchemy import SQLAlchemy
+from datetime import datetime
+import uuid
+import hashlib
+import json
 
-This stub defines a simple ``Order`` class used by the ``orders``
-blueprint to create and store orders in memory.  It provides a
-minimal API similar to what a SQLAlchemy model might expose,
-including a class method ``create_order`` that returns a new order
-instance.  Orders are stored in a class level list for retrieval if
-needed.  The ``db`` object contains a ``session`` with ``add`` and
-``commit`` methods that are no‑ops, satisfying references in the
-Flask routes without requiring an actual database connection.
-"""
+db = SQLAlchemy()
 
-from __future__ import annotations
+class Order(db.Model):
+    __tablename__ = 'orders'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    order_id = db.Column(db.String(36), unique=True, nullable=False, default=lambda: str(uuid.uuid4()))
+    
+    # Privacy features - encrypted order data
+    encrypted_user_id = db.Column(db.String(64), nullable=False)  # Hashed wallet address
+    order_hash = db.Column(db.String(64), nullable=False)  # Order integrity hash
+    
+    # Trading pair reference
+    trading_pair_id = db.Column(db.Integer, db.ForeignKey('trading_pairs.id'), nullable=False)
+    
+    # Order details
+    order_type = db.Column(db.String(20), nullable=False)  # 'market', 'limit', 'stop', 'stop_limit'
+    side = db.Column(db.String(10), nullable=False)  # 'buy', 'sell'
+    amount = db.Column(db.Float, nullable=False)  # Amount of base token
+    price = db.Column(db.Float, nullable=True)  # Price per unit (null for market orders)
+    stop_price = db.Column(db.Float, nullable=True)  # Stop price for stop orders
+    
+    # Order status and execution
+    status = db.Column(db.String(20), nullable=False, default='pending')  # 'pending', 'partial', 'filled', 'cancelled'
+    filled_amount = db.Column(db.Float, nullable=False, default=0.0)
+    remaining_amount = db.Column(db.Float, nullable=False)
+    average_fill_price = db.Column(db.Float, nullable=True)
+    
+    # Privacy settings
+    is_private = db.Column(db.Boolean, default=True)  # Use Shade Protocol privacy
+    hide_from_orderbook = db.Column(db.Boolean, default=False)  # Hidden orders
+    
+    # Timestamps
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    expires_at = db.Column(db.DateTime, nullable=True)  # Order expiration
+    
+    # Relationships
+    trades = db.relationship('Trade', backref='order', lazy=True)
+    
+    def __init__(self, **kwargs):
+        super(Order, self).__init__(**kwargs)
+        if not self.remaining_amount:
+            self.remaining_amount = self.amount
+        if not self.order_hash:
+            self.order_hash = self.generate_order_hash()
+    
+    def generate_order_hash(self):
+        """Generate integrity hash for the order"""
+        order_data = f"{self.order_id}{self.trading_pair_id}{self.order_type}{self.side}{self.amount}{self.price}"
+        return hashlib.sha256(order_data.encode()).hexdigest()
+    
+    def encrypt_user_id(self, wallet_address):
+        """Encrypt user wallet address for privacy"""
+        return hashlib.sha256(f"{wallet_address}_salt_snipswap".encode()).hexdigest()
+    
+    def __repr__(self):
+        return f'<Order {self.order_id}: {self.side} {self.amount} @ {self.price}>'
+    
+    def to_dict(self, include_private=False):
+        data = {
+            'id': self.id,
+            'order_id': self.order_id,
+            'trading_pair_id': self.trading_pair_id,
+            'order_type': self.order_type,
+            'side': self.side,
+            'amount': self.amount,
+            'price': self.price,
+            'stop_price': self.stop_price,
+            'status': self.status,
+            'filled_amount': self.filled_amount,
+            'remaining_amount': self.remaining_amount,
+            'average_fill_price': self.average_fill_price,
+            'is_private': self.is_private,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            'expires_at': self.expires_at.isoformat() if self.expires_at else None
+        }
+        
+        # Only include private data if explicitly requested and authorized
+        if include_private:
+            data.update({
+                'encrypted_user_id': self.encrypted_user_id,
+                'order_hash': self.order_hash,
+                'hide_from_orderbook': self.hide_from_orderbook
+            })
+        
+        return data
+    
+    def to_orderbook_entry(self):
+        """Convert to orderbook entry format (privacy-safe)"""
+        if self.hide_from_orderbook or self.status != 'pending':
+            return None
+            
+        return {
+            'price': self.price,
+            'amount': self.remaining_amount,
+            'side': self.side,
+            'is_private': self.is_private,
+            'timestamp': self.created_at.isoformat() if self.created_at else None
+        }
+    
+    def can_fill(self, incoming_order):
+        """Check if this order can be filled by an incoming order"""
+        if self.trading_pair_id != incoming_order.trading_pair_id:
+            return False
+        if self.side == incoming_order.side:
+            return False
+        if self.status != 'pending' or self.remaining_amount <= 0:
+            return False
+            
+        # Price matching logic
+        if self.side == 'buy' and incoming_order.side == 'sell':
+            return self.price >= incoming_order.price
+        elif self.side == 'sell' and incoming_order.side == 'buy':
+            return self.price <= incoming_order.price
+            
+        return False
+    
+    def partial_fill(self, fill_amount, fill_price):
+        """Execute a partial fill of the order"""
+        if fill_amount > self.remaining_amount:
+            fill_amount = self.remaining_amount
+            
+        self.filled_amount += fill_amount
+        self.remaining_amount -= fill_amount
+        
+        # Update average fill price
+        if self.average_fill_price is None:
+            self.average_fill_price = fill_price
+        else:
+            total_filled_value = (self.filled_amount - fill_amount) * self.average_fill_price + fill_amount * fill_price
+            self.average_fill_price = total_filled_value / self.filled_amount
+        
+        # Update status
+        if self.remaining_amount <= 0:
+            self.status = 'filled'
+        else:
+            self.status = 'partial'
+            
+        self.updated_at = datetime.utcnow()
+        return fill_amount
 
-from typing import List, Any, Dict, Optional
-from dataclasses import dataclass, field
-
-
-@dataclass
-class _DBSession:
-    """No‑op session stub mimicking SQLAlchemy's session."""
-
-    def add(self, instance: Any) -> None:
-        # In a real implementation this would add the instance to the DB
-        return None
-
-    def commit(self) -> None:
-        # In a real implementation this would commit the transaction
-        return None
-
-
-@dataclass
-class _DB:
-    """Database stub with a session attribute."""
-
-    session: _DBSession = field(default_factory=_DBSession)
-
-
-db = _DB()
-
-
-@dataclass
-class Order:
-    """Simple in‑memory order representation."""
-
-    order_id: int
-    user_address: str
-    pair_id: int
-    side: str
-    order_type: str
-    quantity: float
-    price: Optional[float] = None
-    is_private: bool = False
-    encrypted_details: Optional[str] = None
-
-    # Class‑level list to store orders
-    _orders: List['Order'] = field(default_factory=list, init=False, repr=False)
-
-    @classmethod
-    def create_order(cls, **kwargs: Dict[str, Any]) -> 'Order':
-        """Create and persist a new order in memory.
-
-        Parameters
-        ----------
-        **kwargs: dict
-            Keyword arguments corresponding to the order fields.
-
-        Returns
-        -------
-        Order
-            The newly created order instance.
-        """
-        # Generate a new order ID sequentially
-        new_id = len(cls._orders) + 1
-        order = cls(order_id=new_id, **kwargs)
-        cls._orders.append(order)
-        # Mimic SQLAlchemy behaviour of adding to session then committing
-        db.session.add(order)
-        db.session.commit()
-        return order
-
-    @classmethod
-    def get_order_by_id(cls, order_id: int) -> Optional['Order']:
-        for order in cls._orders:
-            if order.order_id == order_id:
-                return order
-        return None

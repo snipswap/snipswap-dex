@@ -1,6 +1,7 @@
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 import uuid
+import hashlib
 
 db = SQLAlchemy()
 
@@ -8,232 +9,127 @@ class Trade(db.Model):
     __tablename__ = 'trades'
     
     id = db.Column(db.Integer, primary_key=True)
-    trade_id = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    trade_id = db.Column(db.String(36), unique=True, nullable=False, default=lambda: str(uuid.uuid4()))
     
-    # Trading pair and orders
-    pair_id = db.Column(db.Integer, db.ForeignKey('trading_pairs.id'), nullable=False, index=True)
-    buy_order_id = db.Column(db.Integer, db.ForeignKey('orders.id'), nullable=False)
-    sell_order_id = db.Column(db.Integer, db.ForeignKey('orders.id'), nullable=False)
+    # Privacy features
+    trade_hash = db.Column(db.String(64), nullable=False)  # Trade integrity hash
+    is_private = db.Column(db.Boolean, default=True)  # Privacy flag
     
-    # Trade participants (encrypted for privacy)
-    buyer_address = db.Column(db.String(64), nullable=False, index=True)
-    seller_address = db.Column(db.String(64), nullable=False, index=True)
+    # Trading pair and order references
+    trading_pair_id = db.Column(db.Integer, db.ForeignKey('trading_pairs.id'), nullable=False)
+    maker_order_id = db.Column(db.Integer, db.ForeignKey('orders.id'), nullable=False)
+    taker_order_id = db.Column(db.Integer, db.ForeignKey('orders.id'), nullable=True)  # Null for market orders
     
     # Trade execution details
-    price = db.Column(db.Numeric(20, 8), nullable=False)
-    quantity = db.Column(db.Numeric(20, 8), nullable=False)
-    total_value = db.Column(db.Numeric(20, 8), nullable=False)
+    price = db.Column(db.Float, nullable=False)  # Execution price
+    amount = db.Column(db.Float, nullable=False)  # Amount traded
+    total_value = db.Column(db.Float, nullable=False)  # price * amount
     
-    # Privacy and encryption
-    is_private = db.Column(db.Boolean, default=True)
-    encrypted_details = db.Column(db.Text, nullable=True)  # Encrypted trade details
-    secret_contract_tx = db.Column(db.String(128), nullable=True)  # Secret Network transaction
+    # Fees (in quote token)
+    maker_fee = db.Column(db.Float, nullable=False, default=0.0)
+    taker_fee = db.Column(db.Float, nullable=False, default=0.0)
+    total_fee = db.Column(db.Float, nullable=False, default=0.0)
     
-    # Fees
-    buyer_fee = db.Column(db.Numeric(20, 8), default=0)
-    seller_fee = db.Column(db.Numeric(20, 8), default=0)
-    total_fees = db.Column(db.Numeric(20, 8), default=0)
-    fee_currency = db.Column(db.String(10), default='SCRT')
+    # Privacy and MEV protection
+    mev_protected = db.Column(db.Boolean, default=True)  # MEV protection flag
+    execution_delay = db.Column(db.Integer, default=0)  # Delay in milliseconds for privacy
     
-    # Trade metadata
-    trade_type = db.Column(db.String(20), default='spot')  # spot, margin, futures
-    settlement_status = db.Column(db.String(20), default='pending')  # pending, settled, failed
+    # Encrypted participant data (for privacy)
+    encrypted_maker_id = db.Column(db.String(64), nullable=False)
+    encrypted_taker_id = db.Column(db.String(64), nullable=True)
     
     # Timestamps
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
     executed_at = db.Column(db.DateTime, default=datetime.utcnow)
-    settled_at = db.Column(db.DateTime, nullable=True)
+    
+    def __init__(self, **kwargs):
+        super(Trade, self).__init__(**kwargs)
+        if not self.total_value:
+            self.total_value = self.price * self.amount
+        if not self.total_fee:
+            self.total_fee = self.maker_fee + self.taker_fee
+        if not self.trade_hash:
+            self.trade_hash = self.generate_trade_hash()
+    
+    def generate_trade_hash(self):
+        """Generate integrity hash for the trade"""
+        trade_data = f"{self.trade_id}{self.trading_pair_id}{self.price}{self.amount}{self.executed_at}"
+        return hashlib.sha256(trade_data.encode()).hexdigest()
     
     def __repr__(self):
-        return f'<Trade {self.trade_id} {self.quantity} @ {self.price}>'
+        return f'<Trade {self.trade_id}: {self.amount} @ {self.price}>'
     
     def to_dict(self, include_private=False):
-        """Convert to dictionary for API responses"""
         data = {
             'id': self.id,
             'trade_id': self.trade_id,
-            'pair_id': self.pair_id,
-            'price': float(self.price),
-            'quantity': float(self.quantity),
-            'total_value': float(self.total_value),
+            'trading_pair_id': self.trading_pair_id,
+            'price': self.price,
+            'amount': self.amount,
+            'total_value': self.total_value,
+            'total_fee': self.total_fee,
             'is_private': self.is_private,
-            'total_fees': float(self.total_fees),
-            'fee_currency': self.fee_currency,
-            'trade_type': self.trade_type,
-            'settlement_status': self.settlement_status,
-            'executed_at': self.executed_at.isoformat(),
-            'settled_at': self.settled_at.isoformat() if self.settled_at else None
+            'mev_protected': self.mev_protected,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'executed_at': self.executed_at.isoformat() if self.executed_at else None
         }
         
+        # Only include sensitive data if explicitly requested and authorized
         if include_private:
             data.update({
-                'buy_order_id': self.buy_order_id,
-                'sell_order_id': self.sell_order_id,
-                'buyer_address': self.buyer_address,
-                'seller_address': self.seller_address,
-                'buyer_fee': float(self.buyer_fee),
-                'seller_fee': float(self.seller_fee),
-                'encrypted_details': self.encrypted_details,
-                'secret_contract_tx': self.secret_contract_tx
+                'trade_hash': self.trade_hash,
+                'maker_order_id': self.maker_order_id,
+                'taker_order_id': self.taker_order_id,
+                'maker_fee': self.maker_fee,
+                'taker_fee': self.taker_fee,
+                'execution_delay': self.execution_delay,
+                'encrypted_maker_id': self.encrypted_maker_id,
+                'encrypted_taker_id': self.encrypted_taker_id
             })
         
         return data
     
-    def to_public_dict(self):
-        """Convert to public dictionary (no private information)"""
+    def to_public_trade(self):
+        """Convert to public trade format (privacy-safe for charts/history)"""
         return {
-            'trade_id': self.trade_id,
-            'price': float(self.price),
-            'quantity': float(self.quantity),
-            'executed_at': self.executed_at.isoformat(),
-            'side': 'unknown'  # Don't reveal trade direction for privacy
+            'price': self.price,
+            'amount': self.amount if not self.is_private else None,  # Hide amount for private trades
+            'timestamp': self.executed_at.isoformat() if self.executed_at else None,
+            'is_private': self.is_private
         }
     
-    def settle_trade(self):
-        """Mark trade as settled"""
-        self.settlement_status = 'settled'
-        self.settled_at = datetime.utcnow()
-        db.session.commit()
-    
-    def fail_settlement(self):
-        """Mark trade settlement as failed"""
-        self.settlement_status = 'failed'
-        db.session.commit()
+    @staticmethod
+    def calculate_fees(amount, price, is_maker=True):
+        """Calculate trading fees"""
+        # Fee structure: 0.1% for makers, 0.15% for takers
+        maker_fee_rate = 0.001  # 0.1%
+        taker_fee_rate = 0.0015  # 0.15%
+        
+        total_value = amount * price
+        
+        if is_maker:
+            return total_value * maker_fee_rate, 0.0
+        else:
+            return 0.0, total_value * taker_fee_rate
     
     @staticmethod
-    def create_trade(buy_order, sell_order, execution_price, execution_quantity):
-        """Create a new trade from matched orders"""
-        trade_id = str(uuid.uuid4())
-        total_value = execution_price * execution_quantity
-        
-        # Calculate fees (0.1% for each side)
-        fee_rate = 0.001
-        buyer_fee = total_value * fee_rate
-        seller_fee = execution_quantity * execution_price * fee_rate
-        total_fees = buyer_fee + seller_fee
+    def create_from_orders(maker_order, taker_order, fill_amount, fill_price):
+        """Create a trade from two matching orders"""
+        maker_fee, taker_fee = Trade.calculate_fees(fill_amount, fill_price, True)
+        _, taker_fee = Trade.calculate_fees(fill_amount, fill_price, False)
         
         trade = Trade(
-            trade_id=trade_id,
-            pair_id=buy_order.pair_id,
-            buy_order_id=buy_order.id,
-            sell_order_id=sell_order.id,
-            buyer_address=buy_order.user_address,
-            seller_address=sell_order.user_address,
-            price=execution_price,
-            quantity=execution_quantity,
-            total_value=total_value,
-            buyer_fee=buyer_fee,
-            seller_fee=seller_fee,
-            total_fees=total_fees,
-            is_private=True  # All trades are private by default
+            trading_pair_id=maker_order.trading_pair_id,
+            maker_order_id=maker_order.id,
+            taker_order_id=taker_order.id if taker_order else None,
+            price=fill_price,
+            amount=fill_amount,
+            maker_fee=maker_fee,
+            taker_fee=taker_fee,
+            is_private=maker_order.is_private or (taker_order and taker_order.is_private),
+            encrypted_maker_id=maker_order.encrypted_user_id,
+            encrypted_taker_id=taker_order.encrypted_user_id if taker_order else None
         )
         
-        db.session.add(trade)
-        db.session.commit()
         return trade
-    
-    @staticmethod
-    def get_user_trades(user_address, pair_id=None, limit=50):
-        """Get trades for a specific user"""
-        query = Trade.query.filter(
-            db.or_(
-                Trade.buyer_address == user_address,
-                Trade.seller_address == user_address
-            )
-        )
-        
-        if pair_id:
-            query = query.filter_by(pair_id=pair_id)
-        
-        return query.order_by(Trade.executed_at.desc()).limit(limit).all()
-    
-    @staticmethod
-    def get_pair_trades(pair_id, limit=100, include_private=False):
-        """Get trades for a specific trading pair"""
-        query = Trade.query.filter_by(pair_id=pair_id)
-        
-        if not include_private:
-            query = query.filter_by(is_private=False)
-        
-        return query.order_by(Trade.executed_at.desc()).limit(limit).all()
-    
-    @staticmethod
-    def get_trade_history(pair_id, start_time=None, end_time=None):
-        """Get trade history for analysis"""
-        query = Trade.query.filter_by(pair_id=pair_id)
-        
-        if start_time:
-            query = query.filter(Trade.executed_at >= start_time)
-        
-        if end_time:
-            query = query.filter(Trade.executed_at <= end_time)
-        
-        return query.order_by(Trade.executed_at.asc()).all()
-    
-    @staticmethod
-    def calculate_volume_24h(pair_id):
-        """Calculate 24-hour trading volume"""
-        from datetime import timedelta
-        
-        start_time = datetime.utcnow() - timedelta(hours=24)
-        
-        trades = Trade.query.filter(
-            Trade.pair_id == pair_id,
-            Trade.executed_at >= start_time,
-            Trade.settlement_status == 'settled'
-        ).all()
-        
-        total_volume = sum(float(trade.total_value) for trade in trades)
-        total_quantity = sum(float(trade.quantity) for trade in trades)
-        
-        return {
-            'volume_quote': total_volume,
-            'volume_base': total_quantity,
-            'trade_count': len(trades)
-        }
-    
-    @staticmethod
-    def get_price_data(pair_id, interval='1h', limit=100):
-        """Get OHLCV price data for charting"""
-        from datetime import timedelta
-        
-        # This is a simplified implementation
-        # In production, you'd use proper time-series aggregation
-        
-        trades = Trade.query.filter_by(
-            pair_id=pair_id
-        ).order_by(Trade.executed_at.desc()).limit(limit * 10).all()
-        
-        if not trades:
-            return []
-        
-        # Group trades by time intervals
-        price_data = []
-        current_candle = None
-        
-        for trade in reversed(trades):  # Process chronologically
-            trade_time = trade.executed_at
-            price = float(trade.price)
-            volume = float(trade.quantity)
-            
-            # Create new candle if needed
-            if not current_candle:
-                current_candle = {
-                    'timestamp': trade_time.isoformat(),
-                    'open': price,
-                    'high': price,
-                    'low': price,
-                    'close': price,
-                    'volume': volume
-                }
-            else:
-                # Update current candle
-                current_candle['high'] = max(current_candle['high'], price)
-                current_candle['low'] = min(current_candle['low'], price)
-                current_candle['close'] = price
-                current_candle['volume'] += volume
-        
-        if current_candle:
-            price_data.append(current_candle)
-        
-        return price_data[-limit:] if len(price_data) > limit else price_data
 
